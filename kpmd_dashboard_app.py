@@ -3,7 +3,6 @@
 # KPMD ME&L STREAMLIT DASHBOARD
 # Run with: streamlit run kpmd_dashboard_app.py
 # ============================================================
-import io
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -17,13 +16,18 @@ GROUP_ORDER = ["KPMD", "Non-KPMD", "All"]
 
 @st.cache_data
 def load_data():
-    monthly = pd.read_csv("kpmd_outputs/monthly_summary.csv")
-    comparison = pd.read_csv("kpmd_outputs/kpmd_vs_non_kpmd_comparison.csv")
-    baseline = pd.read_csv("kpmd_outputs/baseline_midline_comparison.csv")
-    cleaned = pd.read_csv("kpmd_outputs/03_outlier_cleaned_dataset.csv")
-    outliers = pd.read_csv("kpmd_outputs/04_outlier_log.csv")
-    zeros = pd.read_csv("kpmd_outputs/05_zero_flag_log.csv")
-    return monthly, comparison, baseline, cleaned, outliers, zeros
+    """Load all required CSV files for the dashboard."""
+    try:
+        monthly = pd.read_csv("kpmd_outputs/monthly_summary.csv")
+        comparison = pd.read_csv("kpmd_outputs/kpmd_vs_non_kpmd_comparison.csv")
+        baseline = pd.read_csv("kpmd_outputs/baseline_midline_comparison.csv")
+        cleaned = pd.read_csv("kpmd_outputs/03_outlier_cleaned_dataset.csv")
+        outliers = pd.read_csv("kpmd_outputs/04_outlier_log.csv")
+        zeros = pd.read_csv("kpmd_outputs/05_zero_flag_log.csv")
+        return monthly, comparison, baseline, cleaned, outliers, zeros
+    except FileNotFoundError as e:
+        st.error(f"Error loading data files: {e}")
+        st.stop()
 
 monthly, comparison, baseline, cleaned, outliers, zeros = load_data()
 
@@ -38,6 +42,7 @@ groups = st.sidebar.multiselect("Group", GROUP_ORDER, default=["KPMD", "Non-KPMD
 themes = sorted(monthly["theme"].dropna().unique().tolist())
 theme = st.sidebar.selectbox("Indicator theme", ["All"] + themes)
 
+# Apply filters
 filtered = monthly.copy()
 filtered = filtered[filtered["county"].eq(county)]
 filtered = filtered[filtered["month_cat"].isin(months)]
@@ -57,18 +62,19 @@ plot_df = filtered[filtered["indicator"].eq(indicator)].copy()
 st.subheader(f"{county} Dashboard: {indicator}")
 col1, col2, col3, col4 = st.columns(4)
 mean_latest = plot_df.sort_values("month_cat").groupby("group")["mean"].last()
-log_latest = plot_df.sort_values("month_cat").groupby("group")["log_mean"].last()
 n_obs = plot_df["n_obs"].sum()
 
 with col1:
     st.metric("Total observations", f"{n_obs:,.0f}")
 with col2:
-    st.metric("Latest KPMD mean", f"{mean_latest.get('KPMD', np.nan):,.2f}")
+    kpmd_mean = mean_latest.get('KPMD', np.nan)
+    st.metric("Latest KPMD mean", f"{kpmd_mean:,.2f}" if pd.notna(kpmd_mean) else "N/A")
 with col3:
-    st.metric("Latest Non-KPMD mean", f"{mean_latest.get('Non-KPMD', np.nan):,.2f}")
+    non_kpmd_mean = mean_latest.get('Non-KPMD', np.nan)
+    st.metric("Latest Non-KPMD mean", f"{non_kpmd_mean:,.2f}" if pd.notna(non_kpmd_mean) else "N/A")
 with col4:
     diff = mean_latest.get("KPMD", np.nan) - mean_latest.get("Non-KPMD", np.nan)
-    st.metric("Latest KPMD - Non-KPMD", f"{diff:,.2f}" if pd.notna(diff) else "NA")
+    st.metric("Latest KPMD - Non-KPMD", f"{diff:,.2f}" if pd.notna(diff) else "N/A")
 
 # Charts
 st.markdown("### Monthly trend")
@@ -101,41 +107,70 @@ mean_tab, log_tab, baseline_tab, downloads_tab = st.tabs([
 ])
 
 with mean_tab:
-    st.dataframe(plot_df[["county", "month_cat", "group", "theme", "indicator", "unit", "n_obs", "mean", "median", "std", "min", "max"]], use_container_width=True)
+    # Define expected columns and only show those that exist
+    expected_cols = ["county", "month_cat", "group", "theme", "indicator", "unit", "n_obs", "mean", "median", "std", "min", "max"]
+    available_cols = [col for col in expected_cols if col in plot_df.columns]
+    
+    if available_cols:
+        st.dataframe(plot_df[available_cols], use_container_width=True)
+    else:
+        st.error("No valid columns found in the dataset.")
 
 with log_tab:
-    st.dataframe(plot_df[["county", "month_cat", "group", "theme", "indicator", "unit", "n_obs", "log_mean"]], use_container_width=True)
-    fig3 = px.line(
-        plot_df,
-        x="month_cat",
-        y="log_mean",
-        color="group",
-        markers=True,
-        category_orders={"month_cat": MONTH_ORDER},
-        title=f"Log mean trend: {indicator}"
-    )
-    st.plotly_chart(fig3, use_container_width=True)
+    # Check if log_mean column exists
+    if "log_mean" in plot_df.columns:
+        expected_cols = ["county", "month_cat", "group", "theme", "indicator", "unit", "n_obs", "log_mean"]
+        available_cols = [col for col in expected_cols if col in plot_df.columns]
+        
+        if available_cols:
+            st.dataframe(plot_df[available_cols], use_container_width=True)
+        
+        fig3 = px.line(
+            plot_df,
+            x="month_cat",
+            y="log_mean",
+            color="group",
+            markers=True,
+            category_orders={"month_cat": MONTH_ORDER},
+            title=f"Log mean trend: {indicator}"
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+    else:
+        st.warning("Log-mean column not found in the dataset.")
 
 with baseline_tab:
-    st.dataframe(baseline, use_container_width=True)
-    fig4 = px.bar(
-        baseline,
-        x="indicator",
-        y=["baseline_kpmd", "baseline_non_kpmd", "midline_kpmd", "midline_non_kpmd"],
-        barmode="group",
-        title="Baseline and Midline Comparison"
-    )
-    st.plotly_chart(fig4, use_container_width=True)
+    if not baseline.empty:
+        st.dataframe(baseline, use_container_width=True)
+        
+        # Check if required columns exist
+        required_cols = ["baseline_kpmd", "baseline_non_kpmd", "midline_kpmd", "midline_non_kpmd"]
+        if "indicator" in baseline.columns and all(col in baseline.columns for col in required_cols):
+            fig4 = px.bar(
+                baseline,
+                x="indicator",
+                y=required_cols,
+                barmode="group",
+                title="Baseline and Midline Comparison"
+            )
+            st.plotly_chart(fig4, use_container_width=True)
+        else:
+            st.warning("Required columns for baseline comparison chart not found.")
+    else:
+        st.warning("Baseline data is empty.")
 
 with downloads_tab:
     st.markdown("Download key datasets")
     def csv_download_button(df, label, filename):
-        st.download_button(
-            label=label,
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name=filename,
-            mime="text/csv"
-        )
+        """Generate a download button for a CSV file."""
+        if df is not None and not df.empty:
+            st.download_button(
+                label=label,
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name=filename,
+                mime="text/csv"
+            )
+        else:
+            st.warning(f"Data for {filename} is not available.")
 
     csv_download_button(cleaned, "Download outlier-cleaned data", "outlier_cleaned_dataset.csv")
     csv_download_button(monthly, "Download monthly summary", "monthly_summary.csv")
